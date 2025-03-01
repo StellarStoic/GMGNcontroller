@@ -35,7 +35,7 @@ GMGNcontroller is an ESP32-based project that triggers Nostr NIP-01 Kind 1 event
    - You'll also need a few more libraries arduino-nostr is dependant on - **ArduinoJson 7.3.1**, **uBitcoin 0.2.0**, and **WebSockets 2.6.1**
    - Verify and compile and that's it. If all went well, all 3 LEDs should start blinking on boot for a few seconds.
 
-   ![GMGNcontroller Image](GMGNcontrolerIRL.jpg)
+   ![GMGNcontroller Image](GMGNcontrollerIRL.jpg)
 
 3. **Configuration:**
    - On boot, the ESP32 creates a WiFi network named `GMGNcontroller`. Use password `gmgnprotocol`.
