@@ -343,7 +343,7 @@ if (savedRelays.isEmpty()) {
                 "<label>WiFi Password:</label>"
                 "<input type='password' name='wifi_pass' placeholder='Enter your WiFi Password' value='" + savedPass + "'><br>"
                 "<label>Nostr nsecHex:</label>"
-                "<input type='text' name='nsecHex' placeholder='Enter your nsecHex' value='" + savedNsec + "'><br>"
+                "<input type='password' name='nsecHex' placeholder='Enter your nsecHex' value='" + savedNsec + "'><br>"
                 "<label>Nostr npubHex:</label>"
                 "<input type='password' name='npubHex' placeholder='Enter your npubHex' value='" + savedNpub + "'><br>"
                 "<label>Relays (comma separated):</label>"
