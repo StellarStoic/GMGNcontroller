@@ -9,11 +9,23 @@
 #include <Preferences.h>
 #include <WebServer.h>
 
+//--------how to use the device--------
+// After successful compiling to your ESP32, plug in the device and connect to the WIFI GMGNcontroller with your smartphone
+// or computer. Use password gmgnprotocol to connect to it. When you are connected to this wifi 
+// go to 192.168.4.1 and configure the device. You can set the button messages for GM or GN, random sticky strings which should
+// be separated by <<<>>> are used for appending random string to your button message, your wifi credentials,
+// allowed time windows to disable buttons in certain times of the day, Nostr keys, and relays you like to post your messages to.
+// After saving the configuration, the device will restart and show the wifi access point again. Check if everything
+// is set up correctly. WiFi AP is always on for 7 min after start of the device and it will turn off wifi after this time expires
+// for security reasons. After that you can start using your overcomplicated GM,GN controller.
+// To access the settings you can always turn off/on your GMGN controller and visit the settings page.
+
 // -----------------------------------------------------
 // Global Variables and Definitions
 // -----------------------------------------------------
+
 String deviceName = "GMGNcontroller";
-String configSSID, configPass, configNsec, configNpub, btn1Msg, btn2Msg, userName;
+String configSSID, configPass, configNsec, configNpub, btn1Msg, btn1Sticky, btn2Msg, btn2Sticky, userName;
 std::vector<String> configRelays;
 
 // New time window variables (for UTC allowed periods)
@@ -30,11 +42,11 @@ String btn2_end   = "03:59"; // Allowed end for GN button
 #define LED_YELLOW 25   // Yellow LED: processing feedback (active LOW)
 
 unsigned long lastPostTime = 0;
-// const unsigned long cooldownTime = 5000; // 5 sec cooldown
+// const unsigned long cooldownTime = 5000; // 5 sec cooldown for testing
 const unsigned long cooldownTime = 1800000; // 30min cooldown (a time period we need to wait for another button press to work)
 
-// I tried to include a custom tag device but I was getting a bad event id because modifying the JSON (to add the device tag) invalidates the precomputed hash and signature.
-// I need to either generate the event with tags in one step (by changing the library) or avoid modifying the JSON afterward. This will come in the future maybe.
+// I tried to include a custom tag device in nostr event JSON but I was getting a bad event id because modifying the JSON (to add the device tag) invalidates the precomputed hash and signature.
+// I need to either generate the event with tags in one step (by changing the library) or avoid modifying the JSON afterward. This might come in the future maybe.
 // String configDeviceName;  // New: holds the configurable device name
 
 // For button edge detection
@@ -56,7 +68,7 @@ String lastEventID = "";  // Holds the event ID of the note we just sent
 volatile bool eventConfirmed = false;   // Set by our kind1 callback when the event is found
 volatile bool isRelayConnected = false;   // Set by relayConnectionHandler callback
 
-// We'll store the boot time to later disable the AP after 15 minutes.
+// We'll store the boot time to later disable the AP after 7 minutes.
 unsigned long bootTime = 0; // Global variable (already declared above)
 bool apDisabled = false;    // Flag to indicate if AP has been disabled
 
@@ -68,6 +80,7 @@ NostrRelayManager nostrRelayManager;
 NostrQueueProcessor nostrQueue;
 Preferences preferences;
 WebServer server(80);
+
 
 // -----------------------------------------------------
 // Helper Functions for Btns Time Window Checking
@@ -85,7 +98,7 @@ bool inTimeWindow(String startStr, String endStr) {
   int startMin = timeStringToMinutes(startStr);
   int endMin = timeStringToMinutes(endStr);
 
-  // Get current UTC time from getLocalTime (assumes configTime was called with offset 0)
+  // Get current UTC time from getLocalTime (if configTime was called with offset 0)
   struct tm timeinfo;
   if (!getLocalTime(&timeinfo)) return false;
   int nowMin = timeinfo.tm_hour * 60 + timeinfo.tm_min;
@@ -182,6 +195,14 @@ const char* htmlForm = R"rawliteral(
         width: 100%;
         box-sizing: border-box;
       }
+      /* Textarea field styling */
+      #stickyStrings {
+        width: 100%;
+        height: 120px;
+        box-sizing: border-box;
+        padding: 8px;
+        resize: vertical;
+        }
       /* Style for buttons */
       input[type="submit"], input[type="button"] {
         width: auto;
@@ -212,6 +233,8 @@ const char* htmlForm = R"rawliteral(
       
       <label>Button 1 Message:</label>
       <input type="text" name="btn1" placeholder="Enter message for button 1"><br>
+      <label>Random Sticky Strings for Button 1:</label>
+      <textarea id="stickyStrings" name="btn1_sticky" placeholder="Enter sticky strings separated by <<<>>>"></textarea><br>
       <label>Button 1 Allowed Start Time (UTC, HH:MM):</label>
       <input type="time" name="btn1_start" placeholder="e.g., 04:00"><br>
       <label>Button 1 Allowed End Time (UTC, HH:MM):</label>
@@ -219,6 +242,8 @@ const char* htmlForm = R"rawliteral(
       
       <label>Button 2 Message:</label>
       <input type="text" name="btn2" placeholder="Enter message for button 2"><br>
+      <label>Sticky Strings for Button 2:</label>
+      <textarea id="stickyStrings" name="btn2_sticky" placeholder="Enter sticky strings separated by <<<>>>"></textarea><br>
       <label>Button 2 Allowed Start Time (UTC, HH:MM):</label>
       <input type="time" name="btn2_start" placeholder="e.g., 19:00"><br>
       <label>Button 2 Allowed End Time (UTC, HH:MM):</label>
@@ -251,9 +276,11 @@ void handleRoot() {
   String savedUserName = preferences.getString("userName", "");
   // String configDeviceName = preferences.getString("device", "GMGNcontroller");
   String savedBtn1 = preferences.getString("btn1", "");
+  String savedBtn1Sticky = preferences.getString("btn1_sticky", "");
   String savedBtn1Start = preferences.getString("btn1_start", "04:00");
   String savedBtn1End   = preferences.getString("btn1_end", "11:00");
   String savedBtn2 = preferences.getString("btn2", "");
+  String savedBtn2Sticky = preferences.getString("btn2_sticky", "");
   String savedBtn2Start = preferences.getString("btn2_start", "19:00");
   String savedBtn2End   = preferences.getString("btn2_end", "03:59");
   String savedSSID = preferences.getString("wifi_ssid", "");
@@ -267,9 +294,11 @@ void handleRoot() {
   Serial.println("userName: " + savedUserName);
   // Serial.println("device: " + configDeviceName);
   Serial.println("btn1: " + savedBtn1);
+  Serial.println("btn1_sticky: " + savedBtn1Sticky);
   Serial.println("btn1_start: " + savedBtn1Start);
   Serial.println("btn1_end: " + savedBtn1End);
   Serial.println("btn2: " + savedBtn2);
+  Serial.println("btn2_sticky: " + savedBtn2Sticky);
   Serial.println("btn2_start: " + savedBtn2Start);
   Serial.println("btn2_end: " + savedBtn2End);
   Serial.println("wifi_ssid: " + savedSSID);
@@ -308,6 +337,13 @@ if (savedRelays.isEmpty()) {
                 "  background-color: rgba(255, 255, 255, 0.8); /* white layer with opacity for better readability */"
                 "  padding: 20px;"
                 "}"
+                "#stickyStrings {"
+                  "width: 100%; "
+                  "height: 120px; "
+                  "box-sizing: border-box;"
+                  "padding: 8px;"
+                  "resize: vertical;"
+                  "}"
                 "input { margin: 5px 0; padding: 5px; width: 100%; }"
                 "input[type='submit'], input[type='button'] { width: auto; }"
                 ".btn-container {"
@@ -328,12 +364,16 @@ if (savedRelays.isEmpty()) {
 
                 "<label>Button 1 Message:</label>"
                 "<input type='text' name='btn1' placeholder='Enter message for button 1' value='" + savedBtn1 + "'><br>"
+                "<label>Random Sticky Strings for Button 1:</label>"
+                "<textarea id='stickyStrings' name='btn1_sticky' placeholder='Enter sticky strings separated by <<<>>>' style='height:80px;'>" + savedBtn1Sticky + "</textarea><br>"
                 "<label>GM Button Allowed Start Time (UTC, HH:MM):</label>"
                 "<input type='time' name='btn1_start' placeholder='HH:MM' value='" + savedBtn1Start + "'><br>"
                 "<label>GM Button Allowed End Time (UTC, HH:MM):</label>"
                 "<input type='time' name='btn1_end' placeholder='HH:MM' value='" + savedBtn1End + "'><br>"
                 "<label>Button 2 Message:</label>"
                 "<input type='text' name='btn2' placeholder='Enter message for button 2' value='" + savedBtn2 + "'><br>"
+                "<label>Random Sticky Strings for Button 2:</label>"
+                "<textarea id='stickyStrings' name='btn2_sticky' placeholder='Enter sticky strings separated by <<<>>>' style='height:80px;'>" + savedBtn2Sticky + "</textarea><br>"
                 "<label>GN Button Allowed Start Time (UTC, HH:MM):</label>"
                 "<input type='time' name='btn2_start' placeholder='HH:MM' value='" + savedBtn2Start + "'><br>"
                 "<label>GN Button Allowed End Time (UTC, HH:MM):</label>"
@@ -349,23 +389,24 @@ if (savedRelays.isEmpty()) {
                 "<label>Relays (comma separated):</label>"
                 "<input type='text' name='relays' placeholder='e.g., wss://relay.damus.io/,wss://relay.nostr.band...' value='" + savedRelays + "'><br>"
               "<div class='btn-container'>"
-              "  <input type='submit' value='Save' style='background-color: green; color: white; padding: 10px 20px; border: none; border-radius: 5px; margin-left: 10px;'>"
               "  <input type='button' value='Nuke settings' onclick=\"if(confirm('Are you sure you want to reset all the settings? This will erase all your saved configuration.')){window.location.href='/reset';}\" style='background-color: red; color: white; padding: 10px 20px; border: none; border-radius: 5px; margin-right: 10px;'>"
+              "  <input type='submit' value='Save' style='background-color: green; color: white; padding: 10px 20px; border: none; border-radius: 5px; margin-left: 10px;'>"
               "</div>"
               "</form></body></html>";
   
   server.send(200, "text/html", page);
 }
 
-
 void handleSave() {
   if (server.method() == HTTP_POST) {
     userName = server.arg("userName");
     // String device = server.arg("device");
     String btn1 = server.arg("btn1");
+    String btn1Sticky = server.arg("btn1_sticky");
     String btn1_start_val = server.arg("btn1_start");
     String btn1_end_val   = server.arg("btn1_end");
     String btn2 = server.arg("btn2");
+    String btn2Sticky = server.arg("btn2_sticky");
     String btn2_start_val = server.arg("btn2_start");
     String btn2_end_val   = server.arg("btn2_end");
     String wifi_ssid = server.arg("wifi_ssid");
@@ -378,9 +419,11 @@ void handleSave() {
     preferences.putString("userName", userName);
     // preferences.putString("device", device);
     preferences.putString("btn1", btn1);
+    preferences.putString("btn1_sticky", btn1Sticky);
     preferences.putString("btn1_start", btn1_start_val);
     preferences.putString("btn1_end", btn1_end_val);
     preferences.putString("btn2", btn2);
+    preferences.putString("btn2_sticky", btn2Sticky);
     preferences.putString("btn2_start", btn2_start_val);
     preferences.putString("btn2_end", btn2_end_val);
     preferences.putString("wifi_ssid", wifi_ssid);
@@ -482,6 +525,9 @@ void loadConfig() {
   btn1Msg    = preferences.getString("btn1", "GM 🌻");
   btn2Msg    = preferences.getString("btn2", "GN 🌒");
 
+  btn1Sticky = preferences.getString("btn1_sticky", "");
+  btn2Sticky = preferences.getString("btn2_sticky", "");
+
   btn1_start = preferences.getString("btn1_start", "04:00");
   btn1_end   = preferences.getString("btn1_end", "11:00");
   btn2_start = preferences.getString("btn2_start", "19:00");
@@ -526,7 +572,7 @@ unsigned long getUnixTimestamp() {
 }
 
 // -----------------------------------------------------
-// LED & Morse Code Functions
+// LED & Morse Code Functions for greeting you back in morse code
 // -----------------------------------------------------
 String getMorse(char c) {
   switch(toupper(c)) {
@@ -809,6 +855,7 @@ String decodeHtmlEntities(String input) {
   return input;
 }
 
+
 // -----------------------------------------------------
 // sendEvent() Function (Enqueue and Record Event ID)
 // -----------------------------------------------------
@@ -930,6 +977,40 @@ void processEventFeedback() {
   }
 }
 
+// Helper function to split strings based on <<<>>> delimiter
+std::vector<String> splitStickyStrings(String input) {
+  std::vector<String> result;
+  int start = 0;
+  int end = input.indexOf("<<<>>>");
+
+  while (end != -1) {
+    String segment = input.substring(start, end);
+    segment.trim();
+    result.push_back(segment);
+    start = end + 6;  // move past <<<>>> delimiter
+    end = input.indexOf("<<<>>>", start);
+  }
+
+  String lastSegment = input.substring(start);
+  lastSegment.trim();
+  if (lastSegment.length() > 0) {
+    result.push_back(lastSegment);
+  }
+
+  return result;
+}
+
+// Pick one random string
+String getRandomSticky(String stickyStrings) {
+  if (stickyStrings.length() == 0) return ""; // Return empty if nothing provided
+
+  std::vector<String> segments = splitStickyStrings(stickyStrings);
+  if (segments.size() == 0) return "";
+
+  int randIndex = random(segments.size()); // pick random index
+  return segments[randIndex];
+}
+
 // -----------------------------------------------------
 // Normal Operation Loop (Button Handling)
 // -----------------------------------------------------
@@ -950,34 +1031,10 @@ void normalOperationLoop() {
     return;
   
   // Get current button states (true if pressed)
-  bool currentGN = (digitalRead(BUTTON_GN) == LOW);
   bool currentGM = (digitalRead(BUTTON_GM) == LOW);
+  bool currentGN = (digitalRead(BUTTON_GN) == LOW);
   
   // Process individual button release events (rising edge detection)
-  if (!currentGN && lastStateGN && pressTimeGN > 0) { // GN button released
-    // Check if current time is within allowed window for GN button (btn2 message)
-    struct tm timeinfo;
-    if (getLocalTime(&timeinfo)) {
-      int nowMinutes = timeinfo.tm_hour * 60 + timeinfo.tm_min;
-      int allowedStart = timeStringToMinutes(btn2_start);
-      int allowedEnd = timeStringToMinutes(btn2_end);
-      bool allowed;
-      if (allowedStart <= allowedEnd)
-        allowed = (nowMinutes >= allowedStart && nowMinutes < allowedEnd);
-      else
-        allowed = (nowMinutes >= allowedStart || nowMinutes < allowedEnd);
-      if (!allowed) {
-        Serial.println("GN button pressed outside allowed time window; event not sent.");
-        GreenYellowLEDBlinker(10000);
-      } else {
-        Serial.println("GN button released within allowed window. Broadcasting event...");
-        blinkYellow(1000);
-        sendEvent(btn2Msg, "GN 🌒");
-        lastPostTime = millis();
-      }
-    }
-    pressTimeGN = 0;
-  }
   if (!currentGM && lastStateGM && pressTimeGM > 0) { // GM button released
     // Check if current time is within allowed window for GM button (btn1 message)
     struct tm timeinfo;
@@ -996,24 +1053,58 @@ void normalOperationLoop() {
       } else {
         Serial.println("GM button released within allowed window. Broadcasting event...");
         blinkYellow(1000);
-        sendEvent(btn1Msg, "GM 🌻");
+        String sticky = getRandomSticky(btn1Sticky);
+        String messageToSend = btn1Msg;
+        if (sticky.length() > 0) {
+          messageToSend += "\n" + sticky;
+        }
+        sendEvent(messageToSend, "GM");
         lastPostTime = millis();
       }
     }
     pressTimeGM = 0;
   }
+  if (!currentGN && lastStateGN && pressTimeGN > 0) { // GN button released
+    // Check if current time is within allowed window for GN button (btn2 message)
+    struct tm timeinfo;
+    if (getLocalTime(&timeinfo)) {
+      int nowMinutes = timeinfo.tm_hour * 60 + timeinfo.tm_min;
+      int allowedStart = timeStringToMinutes(btn2_start);
+      int allowedEnd = timeStringToMinutes(btn2_end);
+      bool allowed;
+      if (allowedStart <= allowedEnd)
+        allowed = (nowMinutes >= allowedStart && nowMinutes < allowedEnd);
+      else
+        allowed = (nowMinutes >= allowedStart || nowMinutes < allowedEnd);
+      if (!allowed) {
+        Serial.println("GN button pressed outside allowed time window; event not sent.");
+        GreenYellowLEDBlinker(10000);
+      } else {
+        Serial.println("GN button released within allowed window. Broadcasting event...");
+        blinkYellow(1000);
+        String sticky = getRandomSticky(btn2Sticky);
+        String messageToSend = btn2Msg;
+        if (sticky.length() > 0) {
+          messageToSend += "\n" + sticky;
+        }
+        sendEvent(messageToSend, "GN");
+        lastPostTime = millis();
+      }
+    }
+    pressTimeGN = 0;
+  }
   
   // On falling edge, record press times.
-  if (currentGN && !lastStateGN && pressTimeGN == 0) {
-    pressTimeGN = millis();
-  }
   if (currentGM && !lastStateGM && pressTimeGM == 0) {
     pressTimeGM = millis();
   }
-  
+  if (currentGN && !lastStateGN && pressTimeGN == 0) {
+    pressTimeGN = millis();
+  }
+
   // Update last state variables.
-  lastStateGN = currentGN;
   lastStateGM = currentGM;
+  lastStateGN = currentGN;
   
   processEventFeedback();
 }
@@ -1093,9 +1184,9 @@ void loop() {
     processEventFeedback();
   }
   
-  // After 5 minutes (or whatever timeout you choose), disable the AP if STA is connected.
-  if (!apDisabled && (millis() - bootTime > 300000)) { // 5 minutes = 300000 ms
-    Serial.println("🔌 5 minutes elapsed: disabling AP mode to reduce power consumption.");
+  // After 7 minutes, disable the AP if STA is connected.
+  if (!apDisabled && (millis() - bootTime > 420000)) { // 7 minutes = 420000 ms
+    Serial.println("🔌 7 minutes elapsed: disabling AP mode to reduce power consumption.");
     WiFi.softAPdisconnect(true);  // Turn off the AP interface.
     apDisabled = true;
   }
